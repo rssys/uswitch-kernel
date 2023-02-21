@@ -530,7 +530,7 @@ static void __seccomp_filter_orphan(struct seccomp_filter *orig)
 	}
 }
 
-static void __put_seccomp_filter(struct seccomp_filter *orig)
+/*static */void __put_seccomp_filter(struct seccomp_filter *orig)
 {
 	/* Clean up single-reference branches iteratively. */
 	while (orig && refcount_dec_and_test(&orig->refs)) {
@@ -540,7 +540,7 @@ static void __put_seccomp_filter(struct seccomp_filter *orig)
 	}
 }
 
-static void __seccomp_filter_release(struct seccomp_filter *orig)
+/*static */void __seccomp_filter_release(struct seccomp_filter *orig)
 {
 	/* Notify about any unused filters in the task's former filter tree. */
 	__seccomp_filter_orphan(orig);
@@ -910,7 +910,7 @@ static long seccomp_attach_filter(unsigned int flags,
 	return 0;
 }
 
-static void __get_seccomp_filter(struct seccomp_filter *filter)
+/*static */void __get_seccomp_filter(struct seccomp_filter *filter)
 {
 	refcount_inc(&filter->refs);
 }
@@ -923,6 +923,12 @@ void get_seccomp_filter(struct task_struct *tsk)
 		return;
 	__get_seccomp_filter(orig);
 	refcount_inc(&orig->users);
+}
+
+void __get_seccomp_filter_users(struct seccomp_filter *filter)
+{
+	__get_seccomp_filter(filter);
+	refcount_inc(&filter->users);
 }
 
 #endif	/* CONFIG_SECCOMP_FILTER */

@@ -16,6 +16,7 @@
 #include <linux/user_namespace.h>
 #include <linux/proc_ns.h>
 #include <linux/sched/task.h>
+#include <linux/uswitch.h>
 
 #include "util.h"
 
@@ -201,6 +202,10 @@ static int ipcns_install(struct nsset *nsset, struct ns_common *new)
 {
 	struct nsproxy *nsproxy = nsset->nsproxy;
 	struct ipc_namespace *ns = to_ipc_ns(new);
+#ifdef CONFIG_USWITCH
+	if (current->uswitch_contexts && (current->uswitch_contexts->public_table->flags & USWITCH_ISOLATE_NAMESPACES))
+		return -EINVAL;
+#endif
 	if (!ns_capable(ns->user_ns, CAP_SYS_ADMIN) ||
 	    !ns_capable(nsset->cred->user_ns, CAP_SYS_ADMIN))
 		return -EPERM;

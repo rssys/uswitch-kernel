@@ -22,6 +22,7 @@ struct vfsmount;
 struct dentry;
 struct inode;
 struct path;
+struct files_struct;
 extern struct file *alloc_file_pseudo(struct inode *, struct vfsmount *,
 	const char *, int flags, const struct file_operations *);
 extern struct file *alloc_file_clone(struct file *, int flags,
@@ -50,6 +51,7 @@ extern struct file *fget(unsigned int fd);
 extern struct file *fget_many(unsigned int fd, unsigned int refs);
 extern struct file *fget_raw(unsigned int fd);
 extern struct file *fget_task(struct task_struct *task, unsigned int fd);
+extern struct file *fget_files(struct files_struct *files, unsigned int fd);
 extern unsigned long __fdget(unsigned int fd);
 extern unsigned long __fdget_raw(unsigned int fd);
 extern unsigned long __fdget_pos(unsigned int fd);

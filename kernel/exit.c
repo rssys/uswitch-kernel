@@ -64,6 +64,7 @@
 #include <linux/rcuwait.h>
 #include <linux/compat.h>
 #include <linux/io_uring.h>
+#include <linux/uswitch.h>
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
@@ -808,6 +809,10 @@ void __noreturn do_exit(long code)
 
 	tsk->exit_code = code;
 	taskstats_exit(tsk, group_dead);
+
+#ifdef CONFIG_USWITCH
+	exit_uswitch(tsk);
+#endif
 
 	exit_mm();
 

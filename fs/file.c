@@ -972,6 +972,11 @@ struct file *fget_task(struct task_struct *task, unsigned int fd)
 	return file;
 }
 
+struct file *fget_files(struct files_struct *files, unsigned int fd)
+{
+	return __fget_files(files, fd, 0, 1);
+}
+
 struct file *task_lookup_fd_rcu(struct task_struct *task, unsigned int fd)
 {
 	/* Must be called with rcu_read_lock held */

@@ -97,6 +97,7 @@
 #include <linux/scs.h>
 #include <linux/io_uring.h>
 #include <linux/bpf.h>
+#include <linux/uswitch.h>
 
 #include <asm/pgalloc.h>
 #include <linux/uaccess.h>
@@ -923,6 +924,10 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	 * the usage counts on the error path calling free_task.
 	 */
 	tsk->seccomp.filter = NULL;
+#endif
+
+#ifdef CONFIG_USWITCH
+	tsk->uswitch_contexts = NULL;
 #endif
 
 	setup_thread_stack(tsk, orig);
@@ -2204,6 +2209,9 @@ static __latent_entropy struct task_struct *copy_process(
 	retval = copy_thread(clone_flags, args->stack, args->stack_size, p, args->tls);
 	if (retval)
 		goto bad_fork_cleanup_io;
+	retval = copy_uswitch(clone_flags, p);
+	if (retval)
+		goto bad_fork_cleanup_thread;
 
 	stackleak_task_init(p);
 
@@ -2212,7 +2220,7 @@ static __latent_entropy struct task_struct *copy_process(
 				args->set_tid_size);
 		if (IS_ERR(pid)) {
 			retval = PTR_ERR(pid);
-			goto bad_fork_cleanup_thread;
+			goto bad_fork_cleanup_uswitch;
 		}
 	}
 
@@ -2441,6 +2449,8 @@ bad_fork_put_pidfd:
 bad_fork_free_pid:
 	if (pid != &init_struct_pid)
 		free_pid(pid);
+bad_fork_cleanup_uswitch:
+	exit_uswitch(p);
 bad_fork_cleanup_thread:
 	exit_thread(p);
 bad_fork_cleanup_io:

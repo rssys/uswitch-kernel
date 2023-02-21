@@ -5,7 +5,7 @@
 #include <linux/slab.h>
 #include <linux/nsproxy.h>
 #include <linux/proc_ns.h>
-
+#include <linux/uswitch.h>
 
 /* cgroup namespaces */
 
@@ -99,6 +99,11 @@ static int cgroupns_install(struct nsset *nsset, struct ns_common *ns)
 {
 	struct nsproxy *nsproxy = nsset->nsproxy;
 	struct cgroup_namespace *cgroup_ns = to_cg_ns(ns);
+
+#ifdef CONFIG_USWITCH
+	if (current->uswitch_contexts && (current->uswitch_contexts->public_table->flags & USWITCH_ISOLATE_NAMESPACES))
+		return -EINVAL;
+#endif
 
 	if (!ns_capable(nsset->cred->user_ns, CAP_SYS_ADMIN) ||
 	    !ns_capable(cgroup_ns->user_ns, CAP_SYS_ADMIN))

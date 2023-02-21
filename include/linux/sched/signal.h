@@ -11,6 +11,7 @@
 #include <linux/refcount.h>
 #include <linux/posix-timers.h>
 #include <linux/mm_types.h>
+#include <linux/uswitch.h>
 #include <asm/ptrace.h>
 
 /*
@@ -538,10 +539,23 @@ static inline int kill_cad_pid(int sig, int priv)
 
 static inline int __on_sig_stack(unsigned long sp)
 {
+#ifdef CONFIG_USWITCH
+	struct uswitch_contexts_struct *ctxs = current->uswitch_contexts;
+#endif
 #ifdef CONFIG_STACK_GROWSUP
+#ifdef CONFIG_USWITCH
+	if (ctxs && ctxs->ss_control == USWITCH_SIGNAL_STACK_USE_SHARED)
+		return sp >= ctxs->ss_base &&
+			sp - ctxs->ss_base < ctxs->ss_size;
+#endif
 	return sp >= current->sas_ss_sp &&
 		sp - current->sas_ss_sp < current->sas_ss_size;
 #else
+#ifdef CONFIG_USWITCH
+	if (ctxs && ctxs->ss_control == USWITCH_SIGNAL_STACK_USE_SHARED)
+		return sp > ctxs->ss_sp &&
+			sp - ctxs->ss_sp <= ctxs->ss_size;
+#endif
 	return sp > current->sas_ss_sp &&
 		sp - current->sas_ss_sp <= current->sas_ss_size;
 #endif
@@ -561,6 +575,13 @@ static inline int on_sig_stack(unsigned long sp)
 	 * the stack pointer points very close to the end of the signal stack,
 	 * then this check will enable the signal to be handled anyway.
 	 */
+#ifdef CONFIG_USWITCH
+	struct uswitch_contexts_struct *ctxs = current->uswitch_contexts;
+	if (ctxs && ctxs->ss_control == USWITCH_SIGNAL_STACK_USE_SHARED) {
+		if (ctxs->ss_flags & SS_AUTODISARM)
+			return 0;
+	} else
+#endif
 	if (current->sas_ss_flags & SS_AUTODISARM)
 		return 0;
 
@@ -569,6 +590,13 @@ static inline int on_sig_stack(unsigned long sp)
 
 static inline int sas_ss_flags(unsigned long sp)
 {
+#ifdef CONFIG_USWITCH
+	struct uswitch_contexts_struct *ctxs = current->uswitch_contexts;
+	if (ctxs && ctxs->ss_control == USWITCH_SIGNAL_STACK_USE_SHARED) {
+		if (!ctxs->ss_size)
+			return SS_DISABLE;
+	} else
+#endif
 	if (!current->sas_ss_size)
 		return SS_DISABLE;
 

@@ -67,6 +67,7 @@ struct sighand_struct;
 struct signal_struct;
 struct task_delay_info;
 struct task_group;
+struct uswitch_contexts_struct;
 
 /*
  * Task state bitmask. NOTE! These bits are also
@@ -1488,6 +1489,10 @@ struct task_struct {
 	 */
 	struct callback_head		l1d_flush_kill;
 #endif
+
+#ifdef CONFIG_USWITCH
+	struct uswitch_contexts_struct		*uswitch_contexts;
+#endif 
 
 	/*
 	 * New fields for task_struct should be added above here, so that

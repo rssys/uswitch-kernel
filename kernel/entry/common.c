@@ -12,6 +12,10 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/syscalls.h>
 
+#ifdef CONFIG_USWITCH
+#include <linux/uswitch.h>
+#endif
+
 /* See comment for enter_from_user_mode() in entry-common.h */
 static __always_inline void __enter_from_user_mode(struct pt_regs *regs)
 {
@@ -45,6 +49,20 @@ static long syscall_trace_enter(struct pt_regs *regs, long syscall,
 				unsigned long work)
 {
 	long ret = 0;
+#ifdef CONFIG_USWITCH
+	struct task_struct *tsk;
+	bool need_switch_seccomp = false;
+#endif
+
+#ifdef CONFIG_USWITCH
+	/* Handle uswitch */
+	if (work & SYSCALL_WORK_USWITCH) {
+		if (uswitch_enter_syscall(&work, &need_switch_seccomp) < 0) {
+			ret = -1L;
+			goto cleanup;
+		}
+	}
+#endif
 
 	/*
 	 * Handle Syscall User Dispatch.  This must comes first, since
@@ -52,22 +70,24 @@ static long syscall_trace_enter(struct pt_regs *regs, long syscall,
 	 * other syscall_work features.
 	 */
 	if (work & SYSCALL_WORK_SYSCALL_USER_DISPATCH) {
-		if (syscall_user_dispatch(regs))
-			return -1L;
+		if (syscall_user_dispatch(regs)) {
+			ret = -1L;
+			goto cleanup;
+		}
 	}
 
 	/* Handle ptrace */
 	if (work & (SYSCALL_WORK_SYSCALL_TRACE | SYSCALL_WORK_SYSCALL_EMU)) {
 		ret = arch_syscall_enter_tracehook(regs);
 		if (ret || (work & SYSCALL_WORK_SYSCALL_EMU))
-			return -1L;
+			goto cleanup;
 	}
 
 	/* Do seccomp after ptrace, to catch any tracer changes. */
 	if (work & SYSCALL_WORK_SECCOMP) {
 		ret = __secure_computing(NULL);
 		if (ret == -1L)
-			return ret;
+			goto cleanup;
 	}
 
 	/* Either of the above might have changed the syscall number */
@@ -78,6 +98,23 @@ static long syscall_trace_enter(struct pt_regs *regs, long syscall,
 
 	syscall_enter_audit(regs, syscall);
 
+cleanup:
+#ifdef CONFIG_USWITCH
+	if (need_switch_seccomp) {
+		tsk = get_current();
+		spin_lock_irq(&tsk->sighand->siglock);
+		if (tsk->seccomp.filter) {
+			__seccomp_filter_release(tsk->seccomp.filter);
+		}
+		tsk->seccomp = tsk->uswitch_contexts->saved_seccomp;
+		tsk->uswitch_contexts->saved_seccomp.filter = NULL;
+		if (tsk->seccomp.mode != SECCOMP_MODE_DISABLED)
+			set_task_syscall_work(tsk, SECCOMP);
+		else
+			clear_task_syscall_work(tsk, SECCOMP);
+		spin_unlock_irq(&tsk->sighand->siglock);
+	}
+#endif
 	return ret ? : syscall;
 }
 

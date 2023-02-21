@@ -370,6 +370,9 @@
 446	common	landlock_restrict_self	sys_landlock_restrict_self
 447	common	memfd_secret		sys_memfd_secret
 448	common	process_mrelease	sys_process_mrelease
+449	common	uswitch_init		sys_uswitch_init
+450	common	uswitch_clone		sys_uswitch_clone
+451	common  uswitch_cntl        sys_uswitch_cntl
 
 #
 # Due to a historical design error, certain syscalls are numbered differently

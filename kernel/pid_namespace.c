@@ -23,6 +23,7 @@
 #include <linux/sched/task.h>
 #include <linux/sched/signal.h>
 #include <linux/idr.h>
+#include <linux/uswitch.h>
 
 static DEFINE_MUTEX(pid_caches_mutex);
 static struct kmem_cache *pid_ns_cachep;
@@ -377,6 +378,11 @@ static int pidns_install(struct nsset *nsset, struct ns_common *ns)
 	struct nsproxy *nsproxy = nsset->nsproxy;
 	struct pid_namespace *active = task_active_pid_ns(current);
 	struct pid_namespace *ancestor, *new = to_pid_ns(ns);
+
+#ifdef CONFIG_USWITCH
+	if (current->uswitch_contexts && (current->uswitch_contexts->public_table->flags & USWITCH_ISOLATE_NAMESPACES))
+		return -EINVAL;
+#endif
 
 	if (!ns_capable(new->user_ns, CAP_SYS_ADMIN) ||
 	    !ns_capable(nsset->cred->user_ns, CAP_SYS_ADMIN))

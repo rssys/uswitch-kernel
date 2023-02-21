@@ -74,6 +74,7 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/fsnotify_backend.h>
+#include <linux/uswitch.h>
 #include <uapi/linux/limits.h>
 #include <uapi/linux/netfilter/nf_tables.h>
 
@@ -2678,6 +2679,9 @@ static void audit_log_task(struct audit_buffer *ab)
 	audit_log_format(ab, " pid=%d comm=", task_tgid_nr(current));
 	audit_log_untrustedstring(ab, get_task_comm(comm, current));
 	audit_log_d_path_exe(ab, current->mm);
+	audit_log_format(ab, " current_ctx=%d next_ctx=%d",
+					 current->uswitch_contexts ? current->uswitch_contexts->current_cid : -1,
+					 current->uswitch_contexts ? current->uswitch_contexts->kernel_data->shared_descriptor : -1);
 }
 
 /**

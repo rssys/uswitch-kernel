@@ -45,6 +45,9 @@
 #include <linux/posix-timers.h>
 #include <linux/cgroup.h>
 #include <linux/audit.h>
+#ifdef CONFIG_USWITCH
+#include <linux/uswitch.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
@@ -972,6 +975,7 @@ static bool prepare_signal(int sig, struct task_struct *p, bool force)
  */
 static inline bool wants_signal(int sig, struct task_struct *p)
 {
+	int block_signals = 0;
 	if (sigismember(&p->blocked, sig))
 		return false;
 
@@ -1266,6 +1270,17 @@ static void print_fatal_signal(int signr)
 #endif
 	preempt_disable();
 	show_regs(regs);
+#ifdef CONFIG_USWITCH
+	if (current->uswitch_contexts) {
+		struct uswitch_data *data = current->uswitch_contexts->kernel_data;
+		printk("uswitch data: %d %d %d %d %px %lx %d %d %d %d\n",
+			data->shared_descriptor, data->next_descriptor,
+			data->seccomp_descriptor, data->next_seccomp_descriptor,
+			data->ss_sp, data->ss_size,
+			data->ss_flags, data->ss_control,
+			data->block_signals, data->next_block_signals);
+	}
+#endif
 	preempt_enable();
 }
 
@@ -2783,6 +2798,11 @@ relock:
 
 		/* Trace actually delivered signals. */
 		trace_signal_deliver(signr, &ksig->info, ka);
+
+#ifdef CONFIG_USWITCH
+		if (current->uswitch_contexts && current->uswitch_contexts->kernel_data->block_signals)
+			continue;
+#endif
 
 		if (ka->sa.sa_handler == SIG_IGN) /* Do nothing.  */
 			continue;

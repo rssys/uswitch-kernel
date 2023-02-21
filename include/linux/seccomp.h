@@ -90,8 +90,12 @@ static inline int seccomp_mode(struct seccomp *s)
 #endif /* CONFIG_SECCOMP */
 
 #ifdef CONFIG_SECCOMP_FILTER
+extern void __seccomp_filter_release(struct seccomp_filter *orig);
+extern void __get_seccomp_filter(struct seccomp_filter *filter);
+extern void __put_seccomp_filter(struct seccomp_filter *orig);
 extern void seccomp_filter_release(struct task_struct *tsk);
 extern void get_seccomp_filter(struct task_struct *tsk);
+extern void __get_seccomp_filter_users(struct seccomp_filter *filter);
 #else  /* CONFIG_SECCOMP_FILTER */
 static inline void seccomp_filter_release(struct task_struct *tsk)
 {

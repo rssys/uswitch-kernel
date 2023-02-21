@@ -239,12 +239,22 @@ get_sigframe(struct k_sigaction *ka, struct pt_regs *regs, size_t frame_size,
 	     void __user **fpstate)
 {
 	/* Default to using normal stack */
-	bool nested_altstack = on_sig_stack(regs->sp);
+	bool nested_altstack;
 	bool entering_altstack = false;
 	unsigned long math_size = 0;
 	unsigned long sp = regs->sp;
 	unsigned long buf_fx = 0;
 	int ret;
+#ifdef CONFIG_USWITCH
+	struct uswitch_contexts_struct *ctxs = current->uswitch_contexts;
+	if (ctxs) {
+		ctxs->ss_sp = ctxs->kernel_data->ss_sp;
+		ctxs->ss_size = ctxs->kernel_data->ss_size;
+		ctxs->ss_flags = ctxs->kernel_data->ss_flags;
+		ctxs->ss_control = ctxs->kernel_data->ss_control;
+	}
+#endif
+	nested_altstack = on_sig_stack(regs->sp);
 
 	/* redzone */
 	if (IS_ENABLED(CONFIG_X86_64))
@@ -258,8 +268,23 @@ get_sigframe(struct k_sigaction *ka, struct pt_regs *regs, size_t frame_size,
 		 * programs that don't use SS_AUTODISARM get compatible.
 		 */
 		if (sas_ss_flags(sp) == 0) {
+#ifdef CONFIG_USWITCH
+			if (ctxs) {
+				if (ctxs->ss_control == USWITCH_SIGNAL_STACK_USE_SHARED) {
+					sp = ctxs->ss_sp + ctxs->ss_size;
+					entering_altstack = true;
+				} else if (ctxs->ss_control == USWITCH_SIGNAL_STACK_USE_THREAD) {
+					sp = current->sas_ss_sp + current->sas_ss_size;
+					entering_altstack = true;
+				}
+			} else {
+				sp = current->sas_ss_sp + current->sas_ss_size;
+				entering_altstack = true;
+			}
+#else
 			sp = current->sas_ss_sp + current->sas_ss_size;
 			entering_altstack = true;
+#endif
 		}
 	} else if (IS_ENABLED(CONFIG_X86_32) &&
 		   !nested_altstack &&
