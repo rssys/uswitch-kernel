@@ -269,8 +269,10 @@ static struct uswitch_context_struct *copy_uswitch_ctx(struct uswitch_contexts_t
 	const struct cred *cred;
 	const struct cred *real_cred;
 	src_ctx = get_uswitch_ctx(src_table, cid);
-	if (!src_ctx)
-		return -EINVAL;
+	if (!src_ctx) {
+		*ret -EINVAL;
+		return NULL;
+	}
 	dst_ctx = kcalloc(1, sizeof(struct uswitch_context_struct), GFP_KERNEL);
 	if (!dst_ctx) {
 		*ret = -ENOMEM;
