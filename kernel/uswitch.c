@@ -270,7 +270,7 @@ static struct uswitch_context_struct *copy_uswitch_ctx(struct uswitch_contexts_t
 	const struct cred *real_cred;
 	src_ctx = get_uswitch_ctx(src_table, cid);
 	if (!src_ctx) {
-		*ret -EINVAL;
+		*ret = -EINVAL;
 		return NULL;
 	}
 	dst_ctx = kcalloc(1, sizeof(struct uswitch_context_struct), GFP_KERNEL);
@@ -790,53 +790,21 @@ fail_malloc:
 	return ret;
 }
 
-inline static void sort_three_locks(spinlock_t **locks)
-{
-	spinlock_t *tmp;
-	if (locks[1] >= locks[0] && locks[1] >= locks[2]) {
-		tmp = locks[0];
-		locks[0] = locks[1];
-		locks[1] = tmp;
-	} else if (locks[2] >= locks[1] && locks[2] >= locks[0]) {
-		tmp = locks[0];
-		locks[0] = locks[2];
-		locks[2] = tmp;
-	}
-	if (locks[2] > locks[1]) {
-		tmp = locks[2];
-		locks[2] = locks[1];
-		locks[1] = tmp;
-	}
-	if (locks[0] == locks[2]) {
-		locks[1] = NULL;
-		locks[2] = NULL;
-		return;
-	}
-	if (locks[0] == locks[1]) {
-		locks[1] = NULL;
-		return;
-	}
-	if (locks[1] == locks[2]) {
-		locks[2] = NULL;
-	}
-}
-
 int do_uswitch_switch(bool *need_switch_seccomp)
 {
 	struct task_struct *tsk = get_current();
 	struct uswitch_contexts_struct *ctxs = tsk->uswitch_contexts;
 	struct uswitch_context_struct *current_ctx, *next_ctx, *seccomp_ctx = NULL;
-	spinlock_t *locks[3];
 	int current_cid, next_cid, next_next_cid, seccomp_cid, next_seccomp_cid;
 
 	struct files_struct *current_files = NULL;
 	struct fs_struct *current_fs = NULL;
-	struct seccomp_filter *current_seccomp = NULL;
+	struct seccomp current_seccomp = {.filter = NULL};
 	struct nsproxy *current_ns = NULL;
-	const struct cred *current_cred = NULL;
-	const struct cred *current_real_cred = NULL;
+	const struct cred *current_cred_ = NULL;
+	const struct cred *current_real_cred_ = NULL;
+	struct seccomp temp_seccomp = {.filter = NULL};
 
-	int i;
 	if (need_switch_seccomp)
 		*need_switch_seccomp = false;
 	if (!ctxs)
@@ -852,25 +820,25 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 			ctxs->kernel_data->next_descriptor = -1;
 		}
 		if (seccomp_cid != -1 && seccomp_cid != current_cid && need_switch_seccomp) {
-			spin_lock_irq(&ctxs->public_table->lock);
+			spin_lock(&ctxs->public_table->lock);
 			seccomp_ctx = get_uswitch_ctx(ctxs->public_table, seccomp_cid);
-			spin_unlock_irq(&ctxs->public_table->lock);
+			spin_unlock(&ctxs->public_table->lock);
 			if (!seccomp_ctx)
 				return -EBUSY;
-			spin_lock_irq(&seccomp_ctx->lock);
+			spin_lock(&seccomp_ctx->lock);
+			swap(current_seccomp, seccomp_ctx->seccomp);
+			if (current_seccomp.filter)
+				__get_seccomp_filter(current_seccomp.filter);
+			spin_unlock(&seccomp_ctx->lock);
 			spin_lock(&tsk->sighand->siglock);
 			ctxs->saved_seccomp = tsk->seccomp;
-			tsk->seccomp = seccomp_ctx->seccomp;
-			if (tsk->seccomp.filter)
-				get_seccomp_filter(tsk);
-				//__get_seccomp_filter(tsk->seccomp.filter);
+			tsk->seccomp = current_seccomp;
 			*need_switch_seccomp = true;
 			if (tsk->seccomp.mode != SECCOMP_MODE_DISABLED)
 				set_task_syscall_work(tsk, SECCOMP);
 			else
 				clear_task_syscall_work(tsk, SECCOMP);
 			spin_unlock(&tsk->sighand->siglock);
-			spin_unlock_irq(&seccomp_ctx->lock);
 			put_uswitch_ctx(seccomp_ctx);
 		}
 		if (next_seccomp_cid != -2) {
@@ -901,87 +869,52 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 		return -EINVAL;
 	}
 
-	// deadlock prevention
-	locks[0] = current_ctx ? &current_ctx->lock : NULL;
-	locks[1] = next_ctx ? &next_ctx->lock : NULL;
-	locks[2] = seccomp_ctx ? &seccomp_ctx->lock : NULL;
+	spin_lock(&next_ctx->lock);
+	current_files = next_ctx->files;
+	if (current_files)
+		atomic_inc(&current_files->count);
+	current_fs = next_ctx->fs;
+	if (current_fs) {
+		spin_lock(&current_fs->lock);
+		++current_fs->users;
+		spin_unlock(&current_fs->lock);
+	}
+	current_seccomp = next_ctx->seccomp;
+	if (current_seccomp.filter)
+		__get_seccomp_filter_users(current_seccomp.filter);
+	current_ns = next_ctx->nsproxy;
+	if (current_ns)
+		get_nsproxy(current_ns);
+	current_cred_ = next_ctx->cred;
+	if (current_cred_)
+		get_cred(current_cred_);
+	current_real_cred_ = next_ctx->real_cred;
+	if (current_real_cred_)
+		get_cred(current_real_cred_);
+	spin_unlock(&next_ctx->lock);
 
-	sort_three_locks(locks);
-
-	for (i = 0; i < 3; ++i)
-		if (locks[i])
-			spin_lock_irq(locks[i]);
-
-	if (ctxs->public_table->flags & USWITCH_ISOLATE_CREDENTIALS) {
-		if (current_ctx) {
-			if (current_ctx->cred)
-				current_cred = current_ctx->cred;
-			if (current_ctx->real_cred)
-				current_real_cred = current_ctx->real_cred;
-		}
-
-		get_cred(next_ctx->cred);
-		get_cred(next_ctx->real_cred);
-		if (current_ctx) {
-			current_ctx->cred = rcu_replace_pointer(tsk->cred, next_ctx->cred, 1);
-			current_ctx->real_cred = rcu_replace_pointer(tsk->real_cred, next_ctx->real_cred, 1);
-		} else {
-			rcu_assign_pointer(tsk->cred, next_ctx->cred);
-			rcu_assign_pointer(tsk->real_cred, next_ctx->real_cred); 
-		}
+	if (seccomp_ctx) {
+		spin_lock(&seccomp_ctx->lock);
+		temp_seccomp = seccomp_ctx->seccomp;
+		__get_seccomp_filter_users(current_seccomp.filter);
+		spin_unlock(&seccomp_ctx->lock);
 	}
 
 	task_lock(tsk);
-	// switch files
-	current_files = current_ctx->files;
-	if (current_ctx)
-		current_files = current_ctx->files;
-	if (current_ctx)
-		current_ctx->files = tsk->files;
-	tsk->files = next_ctx->files;
-	if (tsk->files)
-		atomic_inc(&tsk->files->count);
-
-	// switch fs
-	if (current_ctx && current_ctx->fs)
-		current_fs = current_ctx->fs;
-	if (current_ctx)
-		current_ctx->fs = tsk->fs;
-	tsk->fs = next_ctx->fs;
-	if (tsk->fs) {
-		spin_lock(&tsk->fs->lock);
-		++tsk->fs->users;
-		spin_unlock(&tsk->fs->lock);
-	}
-
-	// switch namespaces
-	if (ctxs->public_table->flags & USWITCH_ISOLATE_NAMESPACES) {
-		if (current_ctx && current_ctx->nsproxy)
-			current_ns = current_ctx->nsproxy;
-		if (current_ctx)
-			current_ctx->nsproxy = tsk->nsproxy;
-		tsk->nsproxy = next_ctx->nsproxy;
-		if (tsk->nsproxy)
-			get_nsproxy(tsk->nsproxy);
-	}
+	swap(current_files, tsk->files);
+	swap(current_fs, tsk->fs);
+	if (ctxs->public_table->flags & USWITCH_ISOLATE_NAMESPACES)
+		swap(current_ns, tsk->nsproxy);
 	task_unlock(tsk);
 
-	// switch seccomp
-	if (current_ctx && current_ctx->seccomp.filter)
-		current_seccomp = current_ctx->seccomp.filter;
-
 	spin_lock(&tsk->sighand->siglock);
-	if (current_ctx)
-		current_ctx->seccomp = tsk->seccomp;
-	tsk->seccomp = next_ctx->seccomp;
-	if (tsk->seccomp.filter)
-		get_seccomp_filter(tsk);
 	if (seccomp_ctx) {
-		ctxs->saved_seccomp = tsk->seccomp;
-		tsk->seccomp = seccomp_ctx->seccomp;
-		if (tsk->seccomp.filter)
-			get_seccomp_filter(tsk);
+		ctxs->saved_seccomp = current_seccomp;
+		current_seccomp = tsk->seccomp;
+		tsk->seccomp = temp_seccomp;
 		*need_switch_seccomp = true;
+	} else {
+		swap(current_seccomp, tsk->seccomp);
 	}
 	if (tsk->seccomp.mode != SECCOMP_MODE_DISABLED)
 		set_task_syscall_work(tsk, SECCOMP);
@@ -989,22 +922,34 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 		clear_task_syscall_work(tsk, SECCOMP);
 	spin_unlock(&tsk->sighand->siglock);
 
-	for (i = 0; i < 3; ++i)
-		if (locks[2 - i])
-			spin_unlock_irq(locks[2 - i]);
+	if (ctxs->public_table->flags & USWITCH_ISOLATE_CREDENTIALS) {
+		current_cred_ = rcu_replace_pointer(tsk->cred, current_cred_, 1);
+		current_real_cred_ = rcu_replace_pointer(tsk->real_cred, current_real_cred_, 1);
+	}
+
+	if (current_ctx) {
+		spin_lock(&current_ctx->lock);
+		swap(current_files, current_ctx->files);
+		swap(current_fs, current_ctx->fs);
+		swap(current_seccomp, current_ctx->seccomp);
+		swap(current_ns, current_ctx->nsproxy);
+		swap(current_cred_, current_ctx->cred);
+		swap(current_real_cred_, current_ctx->real_cred);
+		spin_unlock(&current_ctx->lock);
+	}
 
 	if (current_files)
 		put_files_struct(current_files);
 	if (current_fs)
 		put_fs(current_fs);
-	if (current_seccomp)
-		__seccomp_filter_release(current_seccomp);
+	if (current_seccomp.filter)
+		__seccomp_filter_release(current_seccomp.filter);
 	if (current_ns)
 		put_nsproxy(current_ns);
-	if (current_cred)
-		put_cred(current_cred);
-	if (current_real_cred)
-		put_cred(current_real_cred);
+	if (current_cred_)
+		put_cred(current_cred_);
+	if (current_real_cred_)
+		put_cred(current_real_cred_);
 
 	if (next_next_cid != -1) {
 		ctxs->kernel_data->shared_descriptor = next_next_cid;
