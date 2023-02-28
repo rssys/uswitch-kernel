@@ -189,15 +189,15 @@ static int copy_uswitch_thread(struct task_struct *tsk) {
 	kernel_data->fork_control = USWITCH_FORK_DISABLE;
 	refcount_inc(&public_table->refs);
 
-	spin_lock_irq(&public_table->lock);
+	spin_lock(&public_table->lock);
 	ctx = (struct uswitch_context_struct *)idr_find(&public_table->ctx_idr, current_cid);
 	if (!ctx) {
 		ret = -EINVAL;
-		spin_unlock_irq(&public_table->lock);
+		spin_unlock(&public_table->lock);
 		goto fail_set_ref;
 	}
 	atomic_inc(&ctx->users);
-	spin_unlock_irq(&public_table->lock);
+	spin_unlock(&public_table->lock);
 
 	down_write(&mm->mmap_lock);
 	user_addr = get_unmapped_area(NULL, 0, PAGE_SIZE, 0, 0);
@@ -241,12 +241,12 @@ fail_vma_alloc:
 	vm_area_free(vma);
 fail_get_unmap:
 	up_write(&mm->mmap_lock);
-	spin_lock_irq(&public_table->lock);
+	spin_lock(&public_table->lock);
 	ctx = (struct uswitch_context_struct *)idr_find(&public_table->ctx_idr, current_cid);
 	if (ctx) {
 		atomic_dec(&ctx->users);
 	}
-	spin_unlock_irq(&public_table->lock);
+	spin_unlock(&public_table->lock);
 fail_set_ref:
 	refcount_dec(&public_table->refs);
 fail_malloc:
@@ -289,7 +289,7 @@ static struct uswitch_context_struct *copy_uswitch_ctx(struct uswitch_contexts_t
 	refcount_set(&dst_ctx->refs, 1);
 	atomic_set(&dst_ctx->users, 0);
 
-	spin_lock_irq(&src_ctx->lock);
+	spin_lock(&src_ctx->lock);
 	files = src_ctx->files;
 	if (files)
 		atomic_inc(&files->count);
@@ -315,7 +315,7 @@ static struct uswitch_context_struct *copy_uswitch_ctx(struct uswitch_contexts_t
 	real_cred = src_ctx->real_cred;
 	if (real_cred)
 		get_cred(real_cred);
-	spin_unlock_irq(&src_ctx->lock);
+	spin_unlock(&src_ctx->lock);
 
 	if (files)
 		dst_ctx->files = dup_fd(files, NR_OPEN_MAX, ret);
@@ -583,7 +583,6 @@ int do_uswitch_init(struct uswitch_data **pdata, int flags)
 	}
 
 	down_write(&mm->mmap_lock);
-	//printk("down mm lock: %px\n", pfn);
 	user_addr = get_unmapped_area(NULL, 0, PAGE_SIZE, 0, 0);
 	if (IS_ERR_VALUE(user_addr)) {
 		ret = -ENOMEM;
@@ -611,12 +610,12 @@ int do_uswitch_init(struct uswitch_data **pdata, int flags)
 		ret = -ENOMEM;
 		goto fail_vma;
 	}
-	//printk("user cid vaddr: %px, pfn: %px, vm_flags: %lx\n", user_addr, pfn, vma->vm_flags);
+
 	if (insert_vm_struct(mm, vma)) {
 		ret = -ENOMEM;
 		goto fail_vma;
 	}
-	//printk("up mm lock: %px\n", pfn);
+
 	up_write(&mm->mmap_lock);
 
 	spin_lock_irq(&current->sighand->siglock);
@@ -760,9 +759,9 @@ int do_uswitch_clone(int flags)
 	}
 
 	idr_preload(GFP_KERNEL);
-	spin_lock_irq(&ctxs->public_table->lock);
+	spin_lock(&ctxs->public_table->lock);
 	new_cid = idr_alloc(&ctxs->public_table->ctx_idr, ctx, 0, USWITCH_MAX_CID, GFP_ATOMIC);
-	spin_unlock_irq(&ctxs->public_table->lock);
+	spin_unlock(&ctxs->public_table->lock);
 	idr_preload_end();
 
 	if (new_cid < 0) {
@@ -830,7 +829,7 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 			if (current_seccomp.filter)
 				__get_seccomp_filter(current_seccomp.filter);
 			spin_unlock(&seccomp_ctx->lock);
-			spin_lock(&tsk->sighand->siglock);
+			spin_lock_irq(&tsk->sighand->siglock);
 			ctxs->saved_seccomp = tsk->seccomp;
 			tsk->seccomp = current_seccomp;
 			*need_switch_seccomp = true;
@@ -838,7 +837,7 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 				set_task_syscall_work(tsk, SECCOMP);
 			else
 				clear_task_syscall_work(tsk, SECCOMP);
-			spin_unlock(&tsk->sighand->siglock);
+			spin_unlock_irq(&tsk->sighand->siglock);
 			put_uswitch_ctx(seccomp_ctx);
 		}
 		if (next_seccomp_cid != -2) {
@@ -852,7 +851,7 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 		return current_cid;
 	}
 
-	spin_lock_irq(&ctxs->public_table->lock);
+	spin_lock(&ctxs->public_table->lock);
 	current_ctx = get_uswitch_ctx(ctxs->public_table, current_cid);
 	next_ctx = get_uswitch_ctx(ctxs->public_table, next_cid);
 	if (next_ctx) {
@@ -860,7 +859,7 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 	}
 	if (seccomp_cid != -1 && seccomp_cid != next_cid && need_switch_seccomp)
 		seccomp_ctx = get_uswitch_ctx(ctxs->public_table, seccomp_cid);
-	spin_unlock_irq(&ctxs->public_table->lock);
+	spin_unlock(&ctxs->public_table->lock);
 	//printk("%px %px %d %d %px %px\n", ctxs->kernel_data, ctxs->user_data, current_cid, next_cid, current_ctx, next_ctx);
 
 	if (!next_ctx) {
@@ -896,7 +895,8 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 	if (seccomp_ctx) {
 		spin_lock(&seccomp_ctx->lock);
 		temp_seccomp = seccomp_ctx->seccomp;
-		__get_seccomp_filter_users(current_seccomp.filter);
+		if (current_seccomp.filter)
+			__get_seccomp_filter_users(current_seccomp.filter);
 		spin_unlock(&seccomp_ctx->lock);
 	}
 
@@ -907,7 +907,7 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 		swap(current_ns, tsk->nsproxy);
 	task_unlock(tsk);
 
-	spin_lock(&tsk->sighand->siglock);
+	spin_lock_irq(&tsk->sighand->siglock);
 	if (seccomp_ctx) {
 		ctxs->saved_seccomp = current_seccomp;
 		current_seccomp = tsk->seccomp;
@@ -920,7 +920,7 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 		set_task_syscall_work(tsk, SECCOMP);
 	else
 		clear_task_syscall_work(tsk, SECCOMP);
-	spin_unlock(&tsk->sighand->siglock);
+	spin_unlock_irq(&tsk->sighand->siglock);
 
 	if (ctxs->public_table->flags & USWITCH_ISOLATE_CREDENTIALS) {
 		current_cred_ = rcu_replace_pointer(tsk->cred, current_cred_, 1);
@@ -985,7 +985,7 @@ int do_uswitch_destroy(int cid)
 		return -EINVAL;
 	if (ctxs->current_cid == cid)
 		return -EBUSY;
-	spin_lock_irq(&ctxs->public_table->lock);
+	spin_lock(&ctxs->public_table->lock);
 	ctx = (struct uswitch_context_struct *)idr_find(&ctxs->public_table->ctx_idr, cid);
 	if (!ctx) {
 		ret = -EINVAL;
@@ -996,11 +996,11 @@ int do_uswitch_destroy(int cid)
 		goto cleanup;
 	}
 	idr_remove(&ctxs->public_table->ctx_idr, cid);
-	spin_unlock_irq(&ctxs->public_table->lock);
+	spin_unlock(&ctxs->public_table->lock);
 	put_uswitch_ctx(ctx);
 	return 0;
 cleanup:
-	spin_unlock_irq(&ctxs->public_table->lock);
+	spin_unlock(&ctxs->public_table->lock);
 	return ret;
 }
 
@@ -1013,14 +1013,14 @@ int do_uswitch_dup_file(int cid, unsigned int fd)
 	int ret;
 	if (!ctxs) 
 		return -EINVAL;
-	spin_lock_irq(&ctxs->public_table->lock);
+	spin_lock(&ctxs->public_table->lock);
 	ctx = (struct uswitch_context_struct *)idr_find(&ctxs->public_table->ctx_idr, cid);
 	if (!ctx) {
-		spin_unlock_irq(&ctxs->public_table->lock);
+		spin_unlock(&ctxs->public_table->lock);
 		return -EINVAL;
 	}
 	file = fget_files(ctx->files, fd);
-	spin_unlock_irq(&ctxs->public_table->lock);
+	spin_unlock(&ctxs->public_table->lock);
 	if (!file)
 		return -EBADF;
 	ret = get_unused_fd_flags(0);
