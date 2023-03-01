@@ -189,15 +189,14 @@ static int copy_uswitch_thread(struct task_struct *tsk) {
 	kernel_data->fork_control = USWITCH_FORK_DISABLE;
 	refcount_inc(&public_table->refs);
 
-	spin_lock(&public_table->lock);
+	rcu_read_lock();
 	ctx = (struct uswitch_context_struct *)idr_find(&public_table->ctx_idr, current_cid);
 	if (!ctx) {
 		ret = -EINVAL;
-		spin_unlock(&public_table->lock);
+		rcu_read_unlock();
 		goto fail_set_ref;
 	}
-	atomic_inc(&ctx->users);
-	spin_unlock(&public_table->lock);
+	rcu_read_unlock();
 
 	down_write(&mm->mmap_lock);
 	user_addr = get_unmapped_area(NULL, 0, PAGE_SIZE, 0, 0);
@@ -241,12 +240,6 @@ fail_vma_alloc:
 	vm_area_free(vma);
 fail_get_unmap:
 	up_write(&mm->mmap_lock);
-	spin_lock(&public_table->lock);
-	ctx = (struct uswitch_context_struct *)idr_find(&public_table->ctx_idr, current_cid);
-	if (ctx) {
-		atomic_dec(&ctx->users);
-	}
-	spin_unlock(&public_table->lock);
 fail_set_ref:
 	refcount_dec(&public_table->refs);
 fail_malloc:
@@ -287,7 +280,6 @@ static struct uswitch_context_struct *copy_uswitch_ctx(struct uswitch_contexts_t
 
 	spin_lock_init(&dst_ctx->lock);
 	refcount_set(&dst_ctx->refs, 1);
-	atomic_set(&dst_ctx->users, 0);
 
 	spin_lock(&src_ctx->lock);
 	files = src_ctx->files;
@@ -414,7 +406,6 @@ static int copy_uswitch_fork(struct task_struct *tsk, int fork_control) {
 	ctx = copy_uswitch_ctx(ptab, public_table, current_cid, &ret);
 	if (!ctx)
 		goto fail_copy_ctxs;
-	atomic_set(&ctx->users, 1);
 
 	if (fork_control == USWITCH_FORK_CURRENT_AND_ANOTHER && current_cid != fork_descriptor) {
 		ctx = copy_uswitch_ctx(ptab, public_table, fork_descriptor, &ret);
@@ -569,7 +560,6 @@ int do_uswitch_init(struct uswitch_data **pdata, int flags)
 	ctxs->current_cid = 0;
 	ctxs->data_page = data_page;
 	ctxs->kernel_data = kernel_data;
-	atomic_set(&ctx->users, 1);
 	refcount_set(&ctx->refs, 1);
 	refcount_set(&public_table->refs, 1);
 	spin_lock_init(&ctx->lock);
@@ -706,7 +696,6 @@ int do_uswitch_clone(int flags)
 	}
 	spin_lock_init(&ctx->lock);
 	refcount_set(&ctx->refs, 1);
-	atomic_set(&ctx->users, 0);
 
 	if (fd_share || fd_copy) {
 		files = get_task_files(tsk);
@@ -819,9 +808,9 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 			ctxs->kernel_data->next_descriptor = -1;
 		}
 		if (seccomp_cid != -1 && seccomp_cid != current_cid && need_switch_seccomp) {
-			spin_lock(&ctxs->public_table->lock);
+			rcu_read_lock();
 			seccomp_ctx = get_uswitch_ctx(ctxs->public_table, seccomp_cid);
-			spin_unlock(&ctxs->public_table->lock);
+			rcu_read_unlock();
 			if (!seccomp_ctx)
 				return -EBUSY;
 			spin_lock(&seccomp_ctx->lock);
@@ -851,15 +840,12 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 		return current_cid;
 	}
 
-	spin_lock(&ctxs->public_table->lock);
+	rcu_read_lock();
 	current_ctx = get_uswitch_ctx(ctxs->public_table, current_cid);
 	next_ctx = get_uswitch_ctx(ctxs->public_table, next_cid);
-	if (next_ctx) {
-		atomic_inc(&next_ctx->users);
-	}
 	if (seccomp_cid != -1 && seccomp_cid != next_cid && need_switch_seccomp)
 		seccomp_ctx = get_uswitch_ctx(ctxs->public_table, seccomp_cid);
-	spin_unlock(&ctxs->public_table->lock);
+	rcu_read_unlock();
 	//printk("%px %px %d %d %px %px\n", ctxs->kernel_data, ctxs->user_data, current_cid, next_cid, current_ctx, next_ctx);
 
 	if (!next_ctx) {
@@ -966,10 +952,8 @@ int do_uswitch_switch(bool *need_switch_seccomp)
 	ctxs->current_cid = next_cid;
 	// set user counts
 
-	if (current_ctx) {
-		atomic_dec(&current_ctx->users);
+	if (current_ctx)
 		put_uswitch_ctx(current_ctx);
-	}
 	put_uswitch_ctx(next_ctx);
 	put_uswitch_ctx(seccomp_ctx);
 	return next_cid;
@@ -986,16 +970,11 @@ int do_uswitch_destroy(int cid)
 	if (ctxs->current_cid == cid)
 		return -EBUSY;
 	spin_lock(&ctxs->public_table->lock);
-	ctx = (struct uswitch_context_struct *)idr_find(&ctxs->public_table->ctx_idr, cid);
+	ctx = (struct uswitch_context_struct *)idr_remove(&ctxs->public_table->ctx_idr, cid);
 	if (!ctx) {
 		ret = -EINVAL;
 		goto cleanup;
 	}
-	if (atomic_read(&ctx->users)) {
-		ret = -EBUSY;
-		goto cleanup;
-	}
-	idr_remove(&ctxs->public_table->ctx_idr, cid);
 	spin_unlock(&ctxs->public_table->lock);
 	put_uswitch_ctx(ctx);
 	return 0;
@@ -1013,14 +992,14 @@ int do_uswitch_dup_file(int cid, unsigned int fd)
 	int ret;
 	if (!ctxs) 
 		return -EINVAL;
-	spin_lock(&ctxs->public_table->lock);
+	rcu_read_lock();
 	ctx = (struct uswitch_context_struct *)idr_find(&ctxs->public_table->ctx_idr, cid);
 	if (!ctx) {
-		spin_unlock(&ctxs->public_table->lock);
+		rcu_read_unlock();
 		return -EINVAL;
 	}
 	file = fget_files(ctx->files, fd);
-	spin_unlock(&ctxs->public_table->lock);
+	rcu_read_unlock();
 	if (!file)
 		return -EBADF;
 	ret = get_unused_fd_flags(0);

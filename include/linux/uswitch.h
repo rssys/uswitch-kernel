@@ -12,7 +12,6 @@ struct fs_struct;
 struct nsproxy;
 struct task_struct;
 struct uswitch_context_struct {
-	atomic_t users;
 	refcount_t refs;
 	spinlock_t lock;
 	struct files_struct *files;
